@@ -98,7 +98,9 @@ use rocket::{
 };
 pub use rocket_governable::RocketGovernable;
 use std::marker::PhantomData;
+use std::net::IpAddr;
 pub use std::num::NonZeroU32;
+use std::str::FromStr;
 
 pub mod header;
 mod limit_error;
@@ -140,6 +142,14 @@ where
     T: RocketGovernable<'r>,
 {
     /// Handler used in `FromRequest::from_request(request: &'r Request)`.
+    ///
+    /// # Warnings
+    ///
+    /// <p style="background:rgba(255,181,77,0.16);padding:0.75em;">
+    /// <strong>Warning:</strong> DO NOT COMPILE WITH FEATURE `cloudflare` unless
+    /// you are behind a cloudflare instance. Doing so will permit users to bypass
+    /// rate limits.
+    /// </p>
     #[inline(always)]
     pub fn handle_from_request(request: &'r Request) -> Outcome<Self, LimitError> {
         let res = request.local_cache(|| {
@@ -150,7 +160,17 @@ where
                         route_name,
                         T::quota(route.method, route_name),
                     );
-                    if let Some(client_ip) = request.client_ip() {
+                    // Check if `cloudflare` feature is enabled. If so, AND that header is 
+                    // presented by the client, then use that IP. If not, attempt to use `client_ip`
+                    // 
+                    // !!! WARNING: COMPILING WITH CLOUDFLARE WHILE NOT BEHIND A CLOUDFLARE INSTANCE
+                    // CAN ALLOW FOR BYPASSING RATE LIMITING !!!
+                    let client_ip_guess = if cfg!(feature = "cloudflare") && request
+                            .headers()
+                            .contains("CF-Connecting-IP"){
+                                IpAddr::from_str(&request.headers().get("CF-Connecting-IP").collect::<String>()).ok()
+                            } else {request.client_ip()};
+                    if let Some(client_ip) = client_ip_guess {
                         let limit_check_res = limiter.check_key(&client_ip);
                         match limit_check_res {
                             Ok(state) => {
